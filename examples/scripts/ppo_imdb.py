@@ -20,7 +20,7 @@ from typing import Optional
 
 import torch
 from accelerate import Accelerator
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from peft import LoraConfig
 from tqdm import tqdm
 from transformers import AutoTokenizer, HfArgumentParser, pipeline
@@ -28,10 +28,42 @@ from transformers import AutoTokenizer, HfArgumentParser, pipeline
 from trl import AutoModelForCausalLMWithValueHead, AutoModelForSeq2SeqLMWithValueHead, PPOConfig, PPOTrainer, set_seed
 from trl.core import LengthSampler
 from trl.import_utils import is_npu_available, is_xpu_available
-
+from pathlib import Path
+import re
 
 tqdm.pandas()
 
+def load_imdb_data(directory: Path):
+    # for train_test in ['train', 'test']:    
+    # data = {'rejected': [], 'chosen': [], 'prompt': []}
+    data = {'text': [], 'label': []}
+    for label in ['neg', 'pos']:
+        # subdir = os.path.join(directory, label)
+        subdir = directory / label
+        for filename in subdir.iterdir():
+            if filename.is_file() and filename.suffix == '.txt':
+                with open(filename, 'r', encoding='utf-8') as file:
+                    text = file.read().strip()
+                match = re.match(r'(\d+)_(\d+)\.txt', filename.name)
+                if match:
+                    id_, rating = match.groups()
+                    # data['text'].append(text)
+                    # data['rating'].append(int(rating))
+                    if label == 'neg':
+                        data['text'].append(text)
+                        data['label'].append(0)
+                        # data['prompt'].append(text)
+                        # data['chosen'].append(f'This is a negative review with a rating of {rating}.')
+                        # data['rejected'].append(f'This is a positive review with a rating of {rating}.')
+                    else:
+                        data['text'].append(text)
+                        data['label'].append(1)
+                        # data['prompt'].append(text)
+                        # data['chosen'].append(f'This is a positive review with a rating of {rating}.')
+                        # data['rejected'].append(f'This is a negative review with a rating of {rating}.')
+        # res[train_test] = data
+    
+    return Dataset.from_dict(data)
 
 @dataclass
 class ScriptArguments:
@@ -57,7 +89,7 @@ trl_model_class = AutoModelForCausalLMWithValueHead if not args.use_seq2seq else
 # Below is an example function to build the dataset. In our case, we use the IMDB dataset
 # from the `datasets` library. One should customize this function to train the model on
 # its own dataset.
-def build_dataset(config, query_dataset, input_min_text_length=2, input_max_text_length=8):
+def build_dataset(config, query_dataset, dataset_dir:Path, input_min_text_length=2, input_max_text_length=8):
     """
     Build dataset for training. This builds the dataset from `load_dataset`, one should
     customize this function to train the model on its own dataset.
@@ -73,7 +105,9 @@ def build_dataset(config, query_dataset, input_min_text_length=2, input_max_text
     tokenizer = AutoTokenizer.from_pretrained(config.model_name)
     tokenizer.pad_token = tokenizer.eos_token
     # load imdb with datasets
-    ds = load_dataset(query_dataset, split="train")
+    # ds = load_dataset(query_dataset, split="train")
+    ds = load_imdb_data(dataset_dir)
+    # eval_ds = load_imdb_data(Path('/home/jovyan/notebook/trl/datasets/aclImdb/test'))
     ds = ds.rename_columns({"text": "review"})
     ds = ds.filter(lambda x: len(x["review"]) > 200, batched=False)
 
@@ -90,7 +124,7 @@ def build_dataset(config, query_dataset, input_min_text_length=2, input_max_text
 
 
 # We retrieve the dataloader by calling the `build_dataset` function.
-dataset = build_dataset(ppo_config, ppo_config.query_dataset)
+dataset = build_dataset(ppo_config, ppo_config.query_dataset, dataset_dir=Path('/home/jovyan/notebook/trl/datasets/aclImdb/train'))
 
 breakpoint()
 def collator(data):

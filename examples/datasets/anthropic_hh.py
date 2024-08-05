@@ -62,6 +62,7 @@ def extract_dialogue(input_text):
 
 
 if __name__ == "__main__":
+    breakpoint()
     args = HfArgumentParser(ScriptArguments).parse_args_into_dataclasses()[0]
     if args.hf_entity is None:
         args.hf_entity = api.whoami()["name"]

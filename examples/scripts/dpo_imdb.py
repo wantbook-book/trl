@@ -53,6 +53,8 @@ python examples/scripts/dpo.py \
 import logging
 import multiprocessing
 import os
+import re
+from pathlib import Path
 from contextlib import nullcontext
 
 from trl.commands.cli_utils import DPOScriptArguments, init_zero_verbose, TrlParser
@@ -68,9 +70,9 @@ if TRL_USE_RICH:
     from rich.logging import RichHandler
 
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
+from pathlib import Path
 from trl import (
     DPOConfig,
     DPOTrainer,
@@ -84,6 +86,33 @@ from trl import (
 
 if TRL_USE_RICH:
     logging.basicConfig(format=FORMAT, datefmt="[%X]", handlers=[RichHandler()], level=logging.INFO)
+
+def load_imdb_data(directory: Path):
+    # for train_test in ['train', 'test']:    
+    data = {'rejected': [], 'chosen': [], 'prompt': []}
+    for label in ['neg', 'pos']:
+        # subdir = os.path.join(directory, label)
+        subdir = directory / label
+        for filename in subdir.iterdir():
+            if filename.is_file() and filename.suffix == '.txt':
+                with open(filename, 'r', encoding='utf-8') as file:
+                    text = file.read().strip()
+                match = re.match(r'(\d+)_(\d+)\.txt', filename.name)
+                if match:
+                    id_, rating = match.groups()
+                    # data['text'].append(text)
+                    # data['rating'].append(int(rating))
+                    if label == 'neg':
+                        data['prompt'].append(text)
+                        data['chosen'].append(f'This is a negative review with a rating of {rating}.')
+                        data['rejected'].append(f'This is a positive review with a rating of {rating}.')
+                    else:
+                        data['prompt'].append(text)
+                        data['chosen'].append(f'This is a positive review with a rating of {rating}.')
+                        data['rejected'].append(f'This is a negative review with a rating of {rating}.')
+        # res[train_test] = data
+    
+    return Dataset.from_dict(data)
 
 
 if __name__ == "__main__":
@@ -148,25 +177,58 @@ if __name__ == "__main__":
     ################
     # Dataset
     ################
-    ds = load_dataset(args.dataset_name)
-    if args.sanity_check:
-        for key in ds:
-            ds[key] = ds[key].select(range(50))
+    
+    
+    # ds = load_dataset(args.dataset_name)
+    train_ds = load_imdb_data(Path('/home/jovyan/notebook/trl/datasets/aclImdb/train'))
+    eval_ds = load_imdb_data(Path('/home/jovyan/notebook/trl/datasets/aclImdb/test'))
+    # ds = load_dataset("imdb", split="train")
+    
+    # if args.sanity_check:
+    #     for key in ds:
+    #         ds[key] = ds[key].select(range(50))
+    # breakpoint()
+    # def build_prompt(example):
+    #     prompt = f"Movie: {example['text']}"
+    #     return prompt
+    # breakpoint()
+    # ds = ds.map(build_prompt, batched=True, desc="Building prompts")
+    
+    # def build_responses(example):
+    #     if example["label"] >= 7:  # positive review
+    #         example['prompt'] = f"Movie: {example['text']}"
+    #         example["chosen"] = example["text"]
+    #         example["rejected"] = "This movie is terrible, I didn't like it at all."
+    #     else:  # negative review
+    #         example["chosen"] = "This is one of the best movies I've ever seen!"
+    #         example["rejected"] = example["text"]
+    #     return example
 
+    # ds = ds.map(build_responses)
+    
+    # breakpoint()
+    
     def process(row):
-        row["prompt"] = tokenizer.apply_chat_template(row["chosen"][:-1], tokenize=False)
-        row["chosen"] = tokenizer.apply_chat_template([row["chosen"][-1]], tokenize=False)
-        row["rejected"] = tokenizer.apply_chat_template([row["rejected"][-1]], tokenize=False)
+        row["prompt"] = tokenizer.apply_chat_template([{'content': row["prompt"], 'role':'user'}], tokenize=False)
+        row["chosen"] = tokenizer.apply_chat_template([{'content': row["chosen"], 'role': 'assistant'}], tokenize=False)
+        row["rejected"] = tokenizer.apply_chat_template([{'content': row["rejected"], 'role': 'assistant'}], tokenize=False)
         return row
-
-    ds = ds.map(
+    train_ds = train_ds.map(
         process,
         num_proc=multiprocessing.cpu_count(),
         load_from_cache_file=False,
     )
-    train_dataset = ds[args.dataset_train_split]
-    eval_dataset = ds[args.dataset_test_split]
-    breakpoint()
+    
+    eval_ds = eval_ds.map(
+        process,
+        num_proc=multiprocessing.cpu_count(),
+        load_from_cache_file=False,
+    )
+    
+    # dataset.set_format(type="keras", columns=["prompt", "chosen", "rejected"])
+    # train_dataset = ds[args.dataset_train_split]
+    # eval_dataset = ds[args.dataset_test_split]
+    # breakpoint()
 
     ################
     # Training
@@ -176,13 +238,13 @@ if __name__ == "__main__":
             model,
             model_ref,
             args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
+            train_dataset=train_ds,
+            eval_dataset=eval_ds,
             tokenizer=tokenizer,
             peft_config=peft_config,
             callbacks=[RichProgressCallback] if TRL_USE_RICH else None,
         )
-    breakpoint()
+
     trainer.train()
 
     with save_context:
